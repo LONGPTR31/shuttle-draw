@@ -2,10 +2,12 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // 只有在 Firebase 後台建立過的管理員帳號才會「已登入」。
+    // 只認 firebase-config.js 裡的管理員帳號。只檢查「有登入」不夠，
+    // 因為任何人都能用網頁上公開的 apiKey 自己註冊一個帳號。
     // 一般同事不登入，所以只能讀取，以及在抽籤開放時各抽一次。
     function isAdmin() {
-      return request.auth != null;
+      return request.auth != null
+        && request.auth.token.email == 'admin@shuttle-draw.example.com';
     }
 
     function stateData() {
@@ -16,8 +18,28 @@ service cloud.firestore {
       return stateData().status == 'open';
     }
 
+    function rosterDoc() {
+      return get(/databases/$(database)/documents/config/rosterIndex).data;
+    }
+
     function rosterIndex() {
-      return get(/databases/$(database)/documents/config/rosterIndex).data.m;
+      return rosterDoc().m;
+    }
+
+    // 姓名必須和名單相同。舊版名單沒有 n（姓名索引），管理員重新儲存名單後才會檢查。
+    function nameOk(memberId, name) {
+      return !('n' in rosterDoc()) || rosterDoc().n[memberId] == name;
+    }
+
+    // 車長的座位固定，不能抽籤
+    function notCaptain(memberId) {
+      return !exists(/databases/$(database)/documents/config/captain)
+        || get(/databases/$(database)/documents/config/captain).data.memberId != memberId;
+    }
+
+    // 抽籤時間要是數字，且和伺服器時間相差不超過 1 小時
+    function tsOk(ts) {
+      return ts is int && ts > request.time.toMillis() - 3600000 && ts < request.time.toMillis() + 3600000;
     }
 
     function drawable(seat) {
@@ -49,6 +71,9 @@ service cloud.firestore {
         && request.resource.data.station in ['東湖宿舍站', '其他站']
         && drawable(request.resource.data.seat)
         && memberId in rosterIndex()
+        && nameOk(memberId, request.resource.data.name)
+        && notCaptain(memberId)
+        && tsOk(request.resource.data.ts)
         && (rosterIndex()[memberId] == '' || rosterIndex()[memberId] == request.resource.data.station)
         && existsAfter(seatPath(request.resource.data.seat))
         && getAfter(seatPath(request.resource.data.seat)).data.memberId == memberId
