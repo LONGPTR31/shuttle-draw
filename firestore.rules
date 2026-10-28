@@ -1,0 +1,72 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // 只有在 Firebase 後台建立過的管理員帳號才會「已登入」。
+    // 一般同事不登入，所以只能讀取，以及在抽籤開放時各抽一次。
+    function isAdmin() {
+      return request.auth != null;
+    }
+
+    function stateData() {
+      return get(/databases/$(database)/documents/config/state).data;
+    }
+
+    function isOpen() {
+      return stateData().status == 'open';
+    }
+
+    function rosterIndex() {
+      return get(/databases/$(database)/documents/config/rosterIndex).data.m;
+    }
+
+    function drawable(seat) {
+      return seat in ['1-1', '1-3', '2-1', '2-3', '2-4', '2-2', '3-1', '3-3', '3-4', '3-2', '4-1', '4-3', '4-4', '4-2', '5-1', '5-3', '5-4', '5-2', '6-1', '6-3', '6-4', '6-2', '7-4', '7-2', '8-4', '8-2', '9-4', '9-2', '10-4', '10-2'];
+    }
+
+    function seatPath(seat) {
+      return /databases/$(database)/documents/seats/$(seat);
+    }
+
+    function drawPath(id) {
+      return /databases/$(database)/documents/draws/$(id);
+    }
+
+    // 設定：所有人可讀，只有管理員可改
+    match /config/{name} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    // 抽籤結果：每個名單上的人只能建立一筆，建立後只有管理員能改或刪
+    match /draws/{memberId} {
+      allow read: if true;
+      allow create: if isAdmin() || (
+        isOpen()
+        && request.resource.data.keys().hasOnly(['memberId', 'name', 'seat', 'station', 'ts'])
+        && request.resource.data.keys().hasAll(['memberId', 'name', 'seat', 'station', 'ts'])
+        && request.resource.data.memberId == memberId
+        && request.resource.data.station in ['東湖宿舍站', '其他站']
+        && drawable(request.resource.data.seat)
+        && memberId in rosterIndex()
+        && (rosterIndex()[memberId] == '' || rosterIndex()[memberId] == request.resource.data.station)
+        && existsAfter(seatPath(request.resource.data.seat))
+        && getAfter(seatPath(request.resource.data.seat)).data.memberId == memberId
+      );
+      allow update, delete: if isAdmin();
+    }
+
+    // 座位鎖：一個座位只能被建立一次，所以不會有兩個人抽到同一個座位
+    match /seats/{seat} {
+      allow read: if true;
+      allow create: if isAdmin() || (
+        isOpen()
+        && drawable(seat)
+        && request.resource.data.keys().hasOnly(['memberId', 'name', 'station', 'ts'])
+        && existsAfter(drawPath(request.resource.data.memberId))
+        && getAfter(drawPath(request.resource.data.memberId)).data.seat == seat
+      );
+      allow update, delete: if isAdmin();
+    }
+  }
+}

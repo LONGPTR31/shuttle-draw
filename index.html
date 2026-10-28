@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="robots" content="noindex">
+<title>交通車座位抽籤</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700&family=IBM+Plex+Mono:wght@400;500&family=Noto+Sans+TC:wght@400;500;700&display=swap">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="page">
+  <header class="top">
+    <div>
+      <h1>交通車座位抽籤</h1>
+      <p class="sub">每人輸入姓名抽一次，30 個座位隨機分配。結果公開。</p>
+    </div>
+    <span class="pill" id="status-pill">尚未開放</span>
+  </header>
+
+  <div class="notice" id="notice" role="alert" hidden></div>
+
+  <main class="layout">
+    <section class="panel draw" aria-labelledby="draw-h">
+      <h2 id="draw-h">抽座位</h2>
+      <p class="state-note" id="state-note"></p>
+      <form id="draw-form" autocomplete="off" novalidate>
+        <div class="field">
+          <label for="name-input">姓名</label>
+          <input id="name-input" type="text" inputmode="text" maxlength="30" placeholder="輸入你的全名" autocomplete="off">
+        </div>
+        <fieldset class="field">
+          <legend>上車站</legend>
+          <div class="seg">
+            <input type="radio" name="station" id="st-donghu" value="東湖宿舍站"><label for="st-donghu">東湖宿舍站</label>
+            <input type="radio" name="station" id="st-other" value="其他站"><label for="st-other">其他站</label>
+          </div>
+          <p class="station-hint" id="station-hint"></p>
+        </fieldset>
+        <button type="submit" id="draw-btn" disabled>抽座位</button>
+      </form>
+      <p class="msg" id="draw-msg" role="status" aria-live="polite"></p>
+      <div class="result" id="result" hidden>
+        <div class="big" id="result-seat"></div>
+        <div>
+          <div class="who" id="result-who"></div>
+          <div class="where" id="result-where"></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel plan-panel" aria-labelledby="plan-h">
+      <h2 id="plan-h">座位圖 <small>灰色斜線為不開放抽籤</small></h2>
+      <div class="bus">
+        <div class="plan" id="plan" role="group" aria-label="交通車座位圖"></div>
+      </div>
+      <div class="legend">
+        <span><i></i>可抽</span>
+        <span><i class="t"></i>已抽、車長（東＝東湖宿舍站）</span>
+        <span><i class="m"></i>你的座位</span>
+        <span><i class="b"></i>不開放抽籤（值班、安全門、自由座）</span>
+      </div>
+      <div class="row" style="margin-top:16px">
+        <button type="button" id="btn-image" class="ghost">下載座位表圖片</button>
+      </div>
+      <p class="msg" id="img-msg" role="status" aria-live="polite"></p>
+    </section>
+
+    <section class="panel results" aria-labelledby="res-h">
+      <h2 id="res-h">抽籤結果</h2>
+      <div class="progress" id="progress"></div>
+      <div class="tablewrap">
+        <table>
+          <thead><tr><th>座位</th><th>姓名</th><th>上車站</th><th>抽籤時間</th><th class="admin-col" hidden>管理</th></tr></thead>
+          <tbody id="result-body"></tbody>
+        </table>
+      </div>
+      <p class="empty" id="result-empty">還沒有人抽籤。</p>
+      <div class="pending" id="pending" hidden>
+        <h3 id="pending-h"></h3>
+        <div class="chips" id="pending-chips"></div>
+      </div>
+    </section>
+  </main>
+
+  <details class="admin" id="admin">
+    <summary>管理員</summary>
+    <div class="admin-body">
+      <form id="admin-form" autocomplete="off" novalidate>
+        <div class="field">
+          <label for="admin-pw">管理密碼</label>
+          <input id="admin-pw" type="password" autocomplete="off">
+        </div>
+        <div class="row"><button type="submit">進入管理</button></div>
+        <p class="msg" id="admin-msg" role="status" aria-live="polite"></p>
+      </form>
+
+      <div id="admin-tools" hidden>
+        <div class="row" style="justify-content:space-between;margin-bottom:16px">
+          <span class="hint" style="margin:0">已登入管理員</span>
+          <button type="button" id="btn-logout" class="ghost small">登出</button>
+        </div>
+        <div class="admin-grid">
+          <div>
+            <h3>抽籤開關</h3>
+            <p class="hint" id="admin-status-text"></p>
+            <div class="row">
+              <button type="button" id="btn-open">開始抽籤</button>
+              <button type="button" id="btn-close" class="ghost">結束抽籤</button>
+            </div>
+          </div>
+          <div>
+            <h3>結果</h3>
+            <p class="hint">匯出會包含尚未抽籤的人。</p>
+            <div class="row">
+              <button type="button" id="btn-export" class="ghost">匯出 CSV</button>
+              <button type="button" id="btn-copy" class="ghost">複製結果</button>
+              <button type="button" id="btn-reset" class="warn">重置所有結果</button>
+            </div>
+          </div>
+          <div>
+            <h3>車長</h3>
+            <p class="hint" id="captain-now"></p>
+            <div class="field">
+              <label for="captain-select" style="position:absolute;left:-9999px">選擇車長</label>
+              <select id="captain-select"></select>
+            </div>
+            <div class="row" style="margin-top:8px"><button type="button" id="btn-captain">設為車長</button></div>
+            <p class="msg" id="captain-msg" role="status" aria-live="polite"></p>
+          </div>
+          <div>
+            <h3>測試</h3>
+            <p class="hint">依名單隨機幫還沒抽的人各抽一次，不需要先開放抽籤。測試結果會標「（測試）」，可以單獨清除。</p>
+            <div class="row">
+              <button type="button" id="btn-test" class="ghost">一鍵隨機抽籤</button>
+              <button type="button" id="btn-test-clear" class="warn">清除測試結果</button>
+            </div>
+            <p class="msg" id="test-msg" role="status" aria-live="polite"></p>
+          </div>
+        </div>
+
+        <div class="admin-grid" style="margin-top:24px">
+          <div>
+            <h3>姓名名單</h3>
+            <p class="hint">一行一個姓名。可在姓名後面加逗號和站點（東湖宿舍站或其他站），例如「王小明,其他站」；有填站點的人抽籤時不能改站點。同名的人請加上區分，例如「王小明A」。已抽過的人不受影響。</p>
+            <div class="field">
+              <label for="roster-input" class="sr" style="position:absolute;left:-9999px">姓名名單</label>
+              <textarea id="roster-input" placeholder="王小明,東湖&#10;李小華,其他"></textarea>
+            </div>
+            <div class="row" style="margin-top:8px">
+              <button type="button" id="btn-roster">儲存名單</button>
+              <span class="hint" id="roster-count" style="margin:0"></span>
+            </div>
+            <p class="msg" id="roster-msg" role="status" aria-live="polite"></p>
+          </div>
+          <div>
+            <h3>變更管理密碼</h3>
+            <p class="hint">新密碼至少 6 個字。變更後，下次登入要用新密碼。</p>
+            <div class="field">
+              <label for="new-pw" style="position:absolute;left:-9999px">新密碼</label>
+              <input id="new-pw" type="password" autocomplete="off" placeholder="新密碼（至少 6 個字）">
+            </div>
+            <div class="row" style="margin-top:8px"><button type="button" id="btn-pw" class="ghost">變更密碼</button></div>
+            <p class="msg" id="pw-msg" role="status" aria-live="polite"></p>
+          </div>
+        </div>
+        <p class="msg" id="tools-msg" role="status" aria-live="polite"></p>
+      </div>
+    </div>
+  </details>
+</div>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>
