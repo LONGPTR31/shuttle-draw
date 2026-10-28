@@ -9,5 +9,6 @@ export const firebaseConfig = {
 };
 
 // 管理員登入用的內部帳號。管理員在網頁上只輸入密碼。
-// 必須和 Firebase 後台 Authentication 裡建立的帳號 email 完全相同。
+// 必須和 Firebase 後台 Authentication 裡建立的帳號 email 完全相同，
+// 也必須和 firestore.rules 裡 isAdmin() 的 email 相同（改一邊就要改另一邊）。
 export const adminEmail = "admin@shuttle-draw.example.com";

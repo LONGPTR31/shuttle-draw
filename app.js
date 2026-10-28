@@ -61,7 +61,7 @@ function sortedDraws() { return S.draws.slice().sort((a, b) => seatOrder(a) - se
 function errText(e) {
   const c = e && e.code;
   if (c === 'permission-denied') return '沒有權限。可能是抽籤尚未開放、已截止、姓名不在名單內，或安全規則還沒設定。';
-  if (c === 'aborted' || c === 'failed-precondition') return '現在有很多人同時抽籤，請再按一次。';
+  if (c === 'aborted' || c === 'failed-precondition' || c === 'already-exists') return '現在有很多人同時抽籤，請再按一次。';
   if (c === 'resource-exhausted') return '今日資料庫用量已達上限，請明天再試或通知管理員。';
   if (c === 'unavailable' || c === 'deadline-exceeded') return '連線發生問題，請檢查網路後再試。';
   return '發生問題，請稍後再試。';
@@ -157,7 +157,7 @@ function renderResults() {
     if (S.admin) {
       const td = el('td');
       const b = el('button', {type:'button', className:'warn small', text:'清除'});
-      armButton(b, '再按一次確認', () => clearOne(d));
+      armButton(b, '再按一次確認', () => clearOne(d), 'clear-' + d.id);
       td.appendChild(b); tr.appendChild(td);
     }
     body.appendChild(tr);
@@ -267,7 +267,7 @@ async function claimSeat(member, station, isTest) {
     tx.set(doc(db, 'seats', seat.id), lock);
     tx.set(drawRef, rec);
     return {draw:Object.assign({}, rec, {id:member.id})};
-  });
+  }, {maxAttempts:30});   // 很多人同時抽會互相衝突，多重試幾次
 }
 
 function upsertDraw(rec) {
@@ -341,14 +341,21 @@ function syncStation() {
 }
 
 /* ---------- admin ---------- */
-function armButton(btn, armedLabel, run) {
-  const orig = btn.textContent; let t = null;
+/* 要按兩次才執行。key 用來在表格重畫後保留「再按一次確認」的狀態 */
+const ARMED = {};
+function armButton(btn, armedLabel, run, key) {
+  const orig = btn.textContent;
+  const k = key || btn.id;
+  const show = on => { btn.classList.toggle('armed', on); btn.textContent = on ? armedLabel : orig; };
+  const disarmLater = () => setTimeout(() => {
+    if (!(ARMED[k] > Date.now())) { delete ARMED[k]; show(false); }
+  }, ARMED[k] - Date.now() + 50);
+  if (ARMED[k] > Date.now()) { show(true); disarmLater(); }
   btn.addEventListener('click', () => {
-    if (!btn.classList.contains('armed')) {
-      btn.classList.add('armed'); btn.textContent = armedLabel;
-      t = setTimeout(() => { btn.classList.remove('armed'); btn.textContent = orig; }, 4000);
+    if (!(ARMED[k] > Date.now())) {
+      ARMED[k] = Date.now() + 4000; show(true); disarmLater();
     } else {
-      clearTimeout(t); btn.classList.remove('armed'); btn.textContent = orig; run();
+      delete ARMED[k]; show(false); run();
     }
   });
 }
@@ -417,14 +424,18 @@ function saveRoster() {
     if (p.station) m.station = p.station;
     return m;
   });
+  const drawers = members.filter(m => m.id !== S.captainId).length;
+  const over = drawers > DRAWABLE.length
+    ? '注意：要抽籤的有 ' + drawers + ' 人，但只有 ' + DRAWABLE.length + ' 個座位，最後 ' + (drawers - DRAWABLE.length) + ' 人會抽不到。' : '';
   return guard('roster-msg', async () => {
     const b = writeBatch(db);
     b.set(doc(db, 'config', 'roster'), {members, next});
-    const idx = {}; members.forEach(m => { idx[m.id] = m.station || ''; });
-    b.set(doc(db, 'config', 'rosterIndex'), {m:idx});
+    const idx = {}, names = {};
+    members.forEach(m => { idx[m.id] = m.station || ''; names[m.id] = m.name; });
+    b.set(doc(db, 'config', 'rosterIndex'), {m:idx, n:names});
     await b.commit();
     S.rosterDirty = false;
-  }, '已儲存 ' + members.length + ' 位。');
+  }, '已儲存 ' + members.length + ' 位。' + over);
 }
 
 function fillCaptainSelect() {
