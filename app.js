@@ -1,6 +1,6 @@
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js';
 import {
-  getFirestore, doc, collection, onSnapshot, runTransaction, writeBatch, setDoc, getDocs
+  getFirestore, doc, collection, onSnapshot, runTransaction, writeBatch, setDoc, getDocs, addDoc, deleteDoc
 } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js';
 import {
   getAuth, setPersistence, browserSessionPersistence, signInWithEmailAndPassword,
@@ -29,7 +29,8 @@ const DRAWABLE = SEATS.filter(s => !s.block);
 const S = {
   status:'idle', roster:[], next:1, draws:[], captainId:'', captainName:'',
   admin:false, focusSeat:null, hiddenSeat:null, flashSeat:null, busy:false,
-  rosterDirty:false, myId:null, rosterSig:'', capSig:'', capSelSig:''
+  rosterDirty:false, myId:null, rosterSig:'', capSig:'', capSelSig:'',
+  ledger:[], ledgerMonth:'', ledgerSig:''
 };
 let REDUCED = false;
 try { REDUCED = window.matchMedia('(prefers-reduced-motion: reduce)').matches; } catch (e) {}
@@ -378,7 +379,7 @@ function onAuth(user) {
   $('admin-form').hidden = S.admin;
   $('admin-tools').hidden = !S.admin;
   if (S.admin) { fillRoster(true); fillCaptainSelect(); }
-  renderResults();
+  renderResults(); renderLedger();
 }
 async function guard(msgId, fn, okText) {
   try { await fn(); if (okText) say(msgId, okText, 'ok'); }
@@ -729,6 +730,86 @@ async function downloadImage() {
   } catch (e) { say('img-msg', '無法下載圖片。', 'err'); }
 }
 
+/* ---------- ledger（公基金收支） ---------- */
+function today() {
+  const d = new Date(), p = n => String(n).padStart(2, '0');
+  return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate());
+}
+function money(n) { return Number(n || 0).toLocaleString('zh-TW'); }
+function ledgerSum(list) {
+  let inc = 0, exp = 0;
+  list.forEach(x => { if (x.type === 'income') inc += x.amount; else exp += x.amount; });
+  return {inc, exp, bal:inc - exp};
+}
+function renderLedger() {
+  const months = Array.from(new Set(S.ledger.map(x => String(x.date).slice(0, 7)))).sort().reverse();
+  if (S.ledgerMonth && months.indexOf(S.ledgerMonth) < 0) S.ledgerMonth = '';
+  const sel = $('ledger-month'); sel.textContent = '';
+  sel.appendChild(el('option', {value:'', text:'全部'}));
+  months.forEach(m => sel.appendChild(el('option', {value:m, text:m.replace('-', ' 年 ') + ' 月'})));
+  sel.value = S.ledgerMonth;
+
+  const rows = S.ledger.filter(x => !S.ledgerMonth || String(x.date).slice(0, 7) === S.ledgerMonth)
+    .sort((a, b) => a.date < b.date ? 1 : a.date > b.date ? -1 : b.ts - a.ts);
+  const body = $('ledger-body'); body.textContent = '';
+  document.querySelectorAll('.admin-col').forEach(n => { n.hidden = !S.admin; });
+  rows.forEach(x => {
+    const inc = x.type === 'income';
+    const tr = el('tr');
+    tr.appendChild(el('td', {text:x.date}));
+    tr.appendChild(el('td', {className:inc ? 'income' : 'expense', text:inc ? '收入' : '支出'}));
+    tr.appendChild(el('td', {className:'item', text:x.item}));
+    tr.appendChild(el('td', {className:'num ' + (inc ? 'income' : 'expense'), text:(inc ? '+' : '−') + money(x.amount)}));
+    if (S.admin) {
+      const td = el('td');
+      const b = el('button', {type:'button', className:'warn small', text:'刪除'});
+      armButton(b, '再按一次確認', () => deleteLedger(x), 'ledger-' + x.id);
+      td.appendChild(b); tr.appendChild(td);
+    }
+    body.appendChild(tr);
+  });
+  const empty = $('ledger-empty');
+  empty.hidden = rows.length > 0;
+  empty.textContent = S.ledger.length ? '這個月份沒有記錄。' : '還沒有收支記錄。';
+
+  const st = $('ledger-stats'); st.textContent = '';
+  const stat = (k, v, cls) => { const s = el('span', {text:k + ' '}); s.appendChild(el('strong', {className:cls || '', text:v})); return s; };
+  const sum = ledgerSum(rows), all = ledgerSum(S.ledger);
+  const signed = n => (n < 0 ? '−' : '') + money(Math.abs(n)) + ' 元';
+  st.appendChild(stat(S.ledgerMonth ? '當月收入' : '總收入', money(sum.inc) + ' 元', 'income'));
+  st.appendChild(stat(S.ledgerMonth ? '當月支出' : '總支出', money(sum.exp) + ' 元', 'expense'));
+  if (S.ledgerMonth) st.appendChild(stat('當月收支', signed(sum.bal)));
+  st.appendChild(stat('目前結餘', signed(all.bal)));
+}
+async function addLedger(e) {
+  e.preventDefault();
+  const date = $('led-date').value;
+  const type = $('led-expense').checked ? 'expense' : 'income';
+  const raw = $('led-amount').value.trim();
+  const amount = Number(raw);
+  const item = $('led-item').value.trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) { say('ledger-msg', '請選擇日期。', 'err'); return; }
+  if (!/^\d+$/.test(raw) || amount < 1 || amount > 100000000) { say('ledger-msg', '金額請輸入大於 0 的整數。', 'err'); return; }
+  if (!item) { say('ledger-msg', '請輸入項目。', 'err'); return; }
+  const btn = $('btn-ledger'); btn.disabled = true;
+  await guard('ledger-msg', async () => {
+    await addDoc(collection(db, 'ledger'), {date, type, amount, item, ts:Date.now()});
+    $('led-amount').value = ''; $('led-item').value = '';
+  }, '已新增' + (type === 'income' ? '收入 ' : '支出 ') + money(amount) + ' 元：' + item);
+  btn.disabled = false;
+}
+function deleteLedger(x) {
+  return guard('ledger-msg', () => deleteDoc(doc(db, 'ledger', x.id)), '已刪除「' + x.item + '」' + money(x.amount) + ' 元。');
+}
+function applyLedger(docs) {
+  const list = docs.map(x => Object.assign({}, x.data(), {id:x.id}))
+    .filter(x => typeof x.amount === 'number' && typeof x.date === 'string');
+  const sig = JSON.stringify(list.map(x => [x.id, x.date, x.type, x.amount, x.item]).sort());
+  if (sig === S.ledgerSig) return;
+  S.ledgerSig = sig; S.ledger = list;
+  renderLedger();
+}
+
 /* ---------- live data ---------- */
 function drawSig(list) { return JSON.stringify(list.map(d => [d.id, d.seat, d.name, d.station, !!d.test]).sort()); }
 function applyState(d) {
@@ -761,7 +842,8 @@ function applyDraws(docs) {
 
 /* ---------- boot ---------- */
 function init() {
-  renderMap(); renderStatus(); renderResults();
+  renderMap(); renderStatus(); renderResults(); renderLedger();
+  $('led-date').value = today();
   try { const nm = localStorage.getItem('bus-draw-name'); if (nm) $('name-input').value = nm; } catch (e) {}
 
   $('draw-form').addEventListener('submit', onDraw);
@@ -777,6 +859,8 @@ function init() {
   $('btn-pw').addEventListener('click', changePw);
   $('btn-captain').addEventListener('click', saveCaptain);
   $('btn-image').addEventListener('click', downloadImage);
+  $('ledger-form').addEventListener('submit', addLedger);
+  $('ledger-month').addEventListener('change', e => { S.ledgerMonth = e.target.value; renderLedger(); });
   armButton($('btn-reset'), '確定清空？再按一次', resetAll);
   armButton($('btn-test'), '確定？再按一次', testDrawAll);
   armButton($('btn-test-clear'), '確定清除？再按一次', clearTest);
@@ -787,5 +871,9 @@ function init() {
   onSnapshot(doc(db, 'config', 'roster'), s => applyRoster(s.exists() ? s.data() : null), onErr);
   onSnapshot(doc(db, 'config', 'captain'), s => applyCaptain(s.exists() ? s.data() : null), onErr);
   onSnapshot(collection(db, 'draws'), q => { notice(''); applyDraws(q.docs); }, onErr);
+  // 收支讀不到時（例如新的安全規則還沒發佈）只在收支區提示，不影響抽籤
+  onSnapshot(collection(db, 'ledger'), q => applyLedger(q.docs), () => {
+    $('ledger-empty').hidden = false; $('ledger-empty').textContent = '收支記錄暫時無法讀取。';
+  });
 }
 init();

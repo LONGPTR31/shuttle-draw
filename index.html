@@ -85,6 +85,24 @@
     </section>
   </main>
 
+  <section class="panel ledger" aria-labelledby="led-h">
+    <h2 id="led-h">公基金收支 <small>交通車公基金的收入與支出明細</small></h2>
+    <div class="ledger-bar">
+      <div class="progress" id="ledger-stats"></div>
+      <div class="field ledger-month">
+        <label for="ledger-month">月份</label>
+        <select id="ledger-month"></select>
+      </div>
+    </div>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>日期</th><th>類型</th><th>項目</th><th class="num">金額</th><th class="admin-col" hidden>管理</th></tr></thead>
+        <tbody id="ledger-body"></tbody>
+      </table>
+    </div>
+    <p class="empty" id="ledger-empty">還沒有收支記錄。</p>
+  </section>
+
   <details class="admin" id="admin">
     <summary>管理員</summary>
     <div class="admin-body">
@@ -139,6 +157,36 @@
             </div>
             <p class="msg" id="test-msg" role="status" aria-live="polite"></p>
           </div>
+        </div>
+
+        <div class="ledger-admin">
+          <h3>記帳</h3>
+          <p class="hint">新增公基金的收入或支出。明細所有人都看得到，只有管理員能新增和刪除；記錯時請刪除後重新記一筆。</p>
+          <form id="ledger-form" autocomplete="off" novalidate>
+            <div class="ledger-fields">
+              <div class="field">
+                <label for="led-date">日期</label>
+                <input id="led-date" type="date">
+              </div>
+              <fieldset class="field">
+                <legend>類型</legend>
+                <div class="seg">
+                  <input type="radio" name="led-type" id="led-income" value="income" checked><label for="led-income">收入</label>
+                  <input type="radio" name="led-type" id="led-expense" value="expense"><label for="led-expense">支出</label>
+                </div>
+              </fieldset>
+              <div class="field">
+                <label for="led-amount">金額（元）</label>
+                <input id="led-amount" type="number" inputmode="numeric" min="1" step="1" placeholder="例如 500">
+              </div>
+              <div class="field led-item">
+                <label for="led-item">項目</label>
+                <input id="led-item" type="text" maxlength="60" placeholder="例如 11 月車資、油錢、過路費">
+              </div>
+            </div>
+            <div class="row"><button type="submit" id="btn-ledger">新增記錄</button></div>
+          </form>
+          <p class="msg" id="ledger-msg" role="status" aria-live="polite"></p>
         </div>
 
         <div class="admin-grid" style="margin-top:24px">
