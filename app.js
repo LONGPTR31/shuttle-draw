@@ -742,7 +742,8 @@ function ledgerSum(list) {
   return {inc, exp, bal:inc - exp};
 }
 function renderLedger() {
-  const months = Array.from(new Set(S.ledger.map(x => String(x.date).slice(0, 7)))).sort().reverse();
+  // 預設顯示當月，所以當月即使還沒有記錄也要出現在選單裡
+  const months = Array.from(new Set(S.ledger.map(x => String(x.date).slice(0, 7)).concat(today().slice(0, 7)))).sort().reverse();
   if (S.ledgerMonth && months.indexOf(S.ledgerMonth) < 0) S.ledgerMonth = '';
   const sel = $('ledger-month'); sel.textContent = '';
   sel.appendChild(el('option', {value:'', text:'全部'}));
@@ -842,6 +843,7 @@ function applyDraws(docs) {
 
 /* ---------- boot ---------- */
 function init() {
+  S.ledgerMonth = today().slice(0, 7);
   renderMap(); renderStatus(); renderResults(); renderLedger();
   $('led-date').value = today();
   try { const nm = localStorage.getItem('bus-draw-name'); if (nm) $('name-input').value = nm; } catch (e) {}
