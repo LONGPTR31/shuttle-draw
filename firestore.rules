@@ -14,12 +14,22 @@ service cloud.firestore {
       return get(/databases/$(database)/documents/config/state).data;
     }
 
-    // 手動開放，或排定時間（openAt，毫秒）已到。用伺服器時間判斷，改手機時間沒有用。
+    // 手動開放，或排定時間（openAt，毫秒）已到；
+    // 有設截止時間（closeAt，毫秒，0＝不截止）時，時間到就不能再抽。
+    // 都用伺服器時間判斷，改手機時間沒有用。
     function isOpen() {
-      return stateData().status == 'open'
-        || (stateData().status == 'scheduled'
-            && stateData().openAt is int
-            && request.time.toMillis() >= stateData().openAt);
+      return (stateData().status == 'open'
+          || (stateData().status == 'scheduled'
+              && stateData().openAt is int
+              && request.time.toMillis() >= stateData().openAt))
+        && notPastClose();
+    }
+
+    function notPastClose() {
+      return !('closeAt' in stateData())
+        || !(stateData().closeAt is int)
+        || stateData().closeAt <= 0
+        || request.time.toMillis() < stateData().closeAt;
     }
 
     function rosterDoc() {
