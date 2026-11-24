@@ -14,8 +14,12 @@ service cloud.firestore {
       return get(/databases/$(database)/documents/config/state).data;
     }
 
+    // 手動開放，或排定時間（openAt，毫秒）已到。用伺服器時間判斷，改手機時間沒有用。
     function isOpen() {
-      return stateData().status == 'open';
+      return stateData().status == 'open'
+        || (stateData().status == 'scheduled'
+            && stateData().openAt is int
+            && request.time.toMillis() >= stateData().openAt);
     }
 
     function rosterDoc() {
