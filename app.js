@@ -268,7 +268,10 @@ function frontBenches() {
     if (m.station === '其他站') no++; else if (m.station === '東湖宿舍站') nd++;
   });
   if (!no || !nd) return null;
-  const nf = Math.max(1, Math.min(BENCHES.length - 1, Math.round(BENCHES.length * no / (no + nd))));
+  // 依人數比例分前後區。剛好算出 .5 時（例如兩站人數一樣），其他站無條件捨去、東湖宿舍站無條件進入。
+  // 用整數計算，避免小數誤差：四捨五入但 .5 往下 = floor((2·B·no + n − 1) / 2n)
+  const n = no + nd, B = BENCHES.length;
+  const nf = Math.max(1, Math.min(B - 1, Math.floor((2 * B * no + n - 1) / (2 * n))));
   const set = {};
   BENCHES.slice(0, nf).forEach(k => { set[k] = true; });
   return set;
