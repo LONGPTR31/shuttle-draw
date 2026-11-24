@@ -1,6 +1,6 @@
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js';
 import {
-  getFirestore, doc, collection, onSnapshot, runTransaction, writeBatch, setDoc, getDocs, addDoc, deleteDoc
+  getFirestore, doc, collection, onSnapshot, runTransaction, writeBatch, getDocs, serverTimestamp
 } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js';
 import {
   getAuth, setPersistence, browserSessionPersistence, signInWithEmailAndPassword,
@@ -106,6 +106,21 @@ function captainName() {
 const app = initializeApp(firebaseConfig);
 const db = getFirestore(app);
 const auth = getAuth(app);
+
+/* ---------- 操作紀錄（audit） ----------
+   管理員的每個操作都和操作本身放在同一批寫入，要嘛一起成功、要嘛一起失敗。
+   紀錄只能新增、不能修改或刪除，可在 Firebase 後台 Firestore 的 audit 集合查看。 */
+function auditData(action, detail) {
+  return {action, detail:String(detail == null ? '' : detail).slice(0, 1000),
+    by:(auth.currentUser && auth.currentUser.email) || '', at:serverTimestamp()};
+}
+function audit(batch, action, detail, id) {
+  batch.set(id ? doc(db, 'audit', id) : doc(collection(db, 'audit')), auditData(action, detail));
+  return batch;
+}
+function logOnly(action, detail) {
+  return audit(writeBatch(db), action, detail).commit().catch(e => console.warn('audit', e));
+}
 
 /* ---------- map ---------- */
 function renderMap() {
@@ -424,6 +439,7 @@ async function onAdminLogin(e) {
   try {
     await setPersistence(auth, browserSessionPersistence);
     await signInWithEmailAndPassword(auth, adminEmail, pw);
+    logOnly('admin.login', navigator.userAgent);
     $('admin-pw').value = ''; say('admin-msg', '');
   } catch (err) {
     const c = err && err.code;
@@ -445,7 +461,12 @@ async function guard(msgId, fn, okText) {
 /* 狀態文件一律整份寫入：status、openAt（排定開放）、closeAt（截止，0＝不截止） */
 function writeState(msgId, patch, okText) {
   const data = Object.assign({status:S.status, openAt:S.openAt || 0, closeAt:S.closeAt || 0}, patch, {updatedAt:Date.now()});
-  return guard(msgId, () => setDoc(doc(db, 'config', 'state'), data), okText);
+  const t = v => v ? new Date(v).toISOString() : '-';
+  return guard(msgId, () => {
+    const b = writeBatch(db);
+    b.set(doc(db, 'config', 'state'), data);
+    return audit(b, 'state.set', 'status=' + data.status + ' openAt=' + t(data.openAt) + ' closeAt=' + t(data.closeAt)).commit();
+  }, okText);
 }
 function setStatus(st) {
   const now = Date.now();
@@ -531,6 +552,7 @@ function saveRoster() {
     const idx = {}, names = {};
     members.forEach(m => { idx[m.id] = m.station || ''; names[m.id] = m.name; });
     b.set(doc(db, 'config', 'rosterIndex'), {m:idx, n:names});
+    audit(b, 'roster.save', members.length + ' 人：' + members.map(m => m.name + (m.station ? '/' + m.station : '')).join('、'));
     await b.commit();
     S.rosterDirty = false;
   }, '已儲存 ' + members.length + ' 位。' + over);
@@ -553,13 +575,21 @@ function fillCaptainSelect() {
 function saveCaptain() {
   const id = $('captain-select').value;
   if (!id) {
-    return guard('captain-msg', () => setDoc(doc(db, 'config', 'captain'), {memberId:'', name:'', updatedAt:Date.now()}), '已取消車長。');
+    return guard('captain-msg', () => {
+      const b = writeBatch(db);
+      b.set(doc(db, 'config', 'captain'), {memberId:'', name:'', updatedAt:Date.now()});
+      return audit(b, 'captain.clear', '').commit();
+    }, '已取消車長。');
   }
   const m = S.roster.find(x => x.id === id);
   if (!m) { say('captain-msg', '名單中找不到這個人。', 'err'); return; }
   const drew = S.draws.find(d => d.id === id);
   if (drew) { say('captain-msg', m.name + ' 已經抽到 ' + drew.seat + '。請先在「抽籤結果」按他那一列的「清除」，再設為車長。', 'err'); return; }
-  return guard('captain-msg', () => setDoc(doc(db, 'config', 'captain'), {memberId:id, name:m.name, updatedAt:Date.now()}),
+  return guard('captain-msg', () => {
+    const b = writeBatch(db);
+    b.set(doc(db, 'config', 'captain'), {memberId:id, name:m.name, updatedAt:Date.now()});
+    return audit(b, 'captain.set', m.name).commit();
+  },
     '已設定 ' + m.name + ' 為車長，座位 1-4。');
 }
 
@@ -568,20 +598,26 @@ function clearOne(d) {
     const b = writeBatch(db);
     b.delete(doc(db, 'draws', d.id));
     b.delete(doc(db, 'seats', d.seat));
+    audit(b, 'draw.clear', d.seat + ' ' + d.name + (d.station ? '/' + d.station : '') + (d.test ? '（測試）' : ''));
     await b.commit();
   }, '已清除 ' + d.name + ' 的結果，他可以重新抽。');
 }
-async function deleteDocs(refs) {
-  for (let i = 0; i < refs.length; i += 400) {
+/* 分批刪除；操作紀錄放在第一批 */
+async function deleteDocs(refs, action, detail) {
+  for (let i = 0; i === 0 || i < refs.length; i += 400) {
     const b = writeBatch(db);
     refs.slice(i, i + 400).forEach(r => b.delete(r));
+    if (i === 0) audit(b, action, detail);
     await b.commit();
   }
+}
+function drawList(docs) {
+  return docs.map(x => { const d = x.data(); return (d.seat || '?') + ' ' + (d.name || ''); }).join('、');
 }
 function resetAll() {
   return guard('tools-msg', async () => {
     const [d, s] = await Promise.all([getDocs(collection(db, 'draws')), getDocs(collection(db, 'seats'))]);
-    await deleteDocs(d.docs.map(x => x.ref).concat(s.docs.map(x => x.ref)));
+    await deleteDocs(d.docs.map(x => x.ref).concat(s.docs.map(x => x.ref)), 'draw.resetAll', d.docs.length + ' 筆：' + drawList(d.docs));
     S.focusSeat = null; S.myId = null; $('result').hidden = true;
   }, '已清空所有結果。');
 }
@@ -602,6 +638,7 @@ async function testDrawAll() {
       else { stop = out.error === 'full' ? '座位已經抽完。' : '無法繼續。'; break; }
     }
     say('test-msg', '已幫 ' + ok + ' 位抽籤。' + stop, stop ? 'err' : 'ok');
+    if (ok) logOnly('draw.test', ok + ' 筆');
   } catch (err) {
     say('test-msg', errText(err), 'err');
   } finally {
@@ -612,11 +649,9 @@ function clearTest() {
   return guard('test-msg', async () => {
     const snap = await getDocs(collection(db, 'draws'));
     const refs = [];
-    snap.docs.forEach(x => {
-      const d = x.data();
-      if (d.test) { refs.push(x.ref); if (d.seat) refs.push(doc(db, 'seats', d.seat)); }
-    });
-    await deleteDocs(refs);
+    const tests = snap.docs.filter(x => x.data().test);
+    tests.forEach(x => { const d = x.data(); refs.push(x.ref); if (d.seat) refs.push(doc(db, 'seats', d.seat)); });
+    await deleteDocs(refs, 'draw.clearTest', tests.length + ' 筆');
     S.focusSeat = null; S.myId = null; $('result').hidden = true;
   }, '已清除測試結果。');
 }
@@ -626,6 +661,7 @@ function changePw() {
   const user = auth.currentUser;
   if (!user) { say('pw-msg', '請先登入管理員。', 'err'); return; }
   updatePassword(user, v).then(() => {
+    logOnly('admin.password', '');
     $('new-pw').value = ''; say('pw-msg', '密碼已變更，下次登入請用新密碼。', 'ok');
   }, err => {
     const c = err && err.code;
@@ -897,13 +933,23 @@ async function addLedger(e) {
   if (!item) { say('ledger-msg', '請輸入項目。', 'err'); return; }
   const btn = $('btn-ledger'); btn.disabled = true;
   await guard('ledger-msg', async () => {
-    await addDoc(collection(db, 'ledger'), {date, type, amount, item, ts:Date.now()});
+    const b = writeBatch(db);
+    const ref = doc(collection(db, 'ledger'));
+    b.set(ref, {date, type, amount, item, ts:Date.now()});
+    audit(b, 'ledger.add', ref.id + ' ' + date + ' ' + (type === 'income' ? '收入' : '支出') + ' ' + amount + ' ' + item);
+    await b.commit();
     $('led-amount').value = ''; $('led-item').value = '';
   }, '已新增' + (type === 'income' ? '收入 ' : '支出 ') + money(amount) + ' 元：' + item);
   btn.disabled = false;
 }
 function deleteLedger(x) {
-  return guard('ledger-msg', () => deleteDoc(doc(db, 'ledger', x.id)), '已刪除「' + x.item + '」' + money(x.amount) + ' 元。');
+  // 安全規則要求刪除收支時，同一批一定要寫入 audit/ledger-del-<編號>
+  return guard('ledger-msg', () => {
+    const b = writeBatch(db);
+    b.delete(doc(db, 'ledger', x.id));
+    audit(b, 'ledger.delete', x.id + ' ' + x.date + ' ' + (x.type === 'income' ? '收入' : '支出') + ' ' + x.amount + ' ' + x.item, 'ledger-del-' + x.id);
+    return b.commit();
+  }, '已刪除「' + x.item + '」' + money(x.amount) + ' 元。');
 }
 function applyLedger(docs) {
   const list = docs.map(x => Object.assign({}, x.data(), {id:x.id}))

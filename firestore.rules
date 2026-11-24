@@ -40,9 +40,9 @@ service cloud.firestore {
       return rosterDoc().m;
     }
 
-    // 姓名必須和名單相同。舊版名單沒有 n（姓名索引），管理員重新儲存名單後才會檢查。
+    // 姓名必須和名單相同（n 是姓名索引，管理員儲存名單時寫入）
     function nameOk(memberId, name) {
-      return !('n' in rosterDoc()) || rosterDoc().n[memberId] == name;
+      return 'n' in rosterDoc() && rosterDoc().n[memberId] == name;
     }
 
     // 車長的座位固定，不能抽籤
@@ -66,6 +66,10 @@ service cloud.firestore {
 
     function drawPath(id) {
       return /databases/$(database)/documents/draws/$(id);
+    }
+
+    function auditPath(id) {
+      return /databases/$(database)/documents/audit/$(id);
     }
 
     // 設定：所有人可讀，只有管理員可改
@@ -112,18 +116,44 @@ service cloud.firestore {
         && request.resource.data.item.size() > 0
         && request.resource.data.item.size() <= 60
         && request.resource.data.ts is int;
-      allow delete: if isAdmin();
+      // 刪除收支一定要同時留下操作紀錄 audit/ledger-del-<編號>
+      allow delete: if isAdmin()
+        && existsAfter(auditPath('ledger-del-' + entryId))
+        && getAfter(auditPath('ledger-del-' + entryId)).data.action == 'ledger.delete';
+    }
+
+    // 操作紀錄：只有管理員能新增和讀取，任何人（包含管理員）都不能修改或刪除。
+    // 時間用伺服器時間，操作者是登入帳號，都不能造假。
+    match /audit/{id} {
+      allow read: if isAdmin();
+      allow create: if isAdmin()
+        && request.resource.data.keys().hasOnly(['action', 'detail', 'by', 'at'])
+        && request.resource.data.keys().hasAll(['action', 'detail', 'by', 'at'])
+        && request.resource.data.action is string
+        && request.resource.data.action.size() > 0
+        && request.resource.data.action.size() <= 40
+        && request.resource.data.detail is string
+        && request.resource.data.detail.size() <= 1000
+        && request.resource.data.by == request.auth.token.email
+        && request.resource.data.at == request.time;
+      allow update, delete: if false;
     }
 
     // 座位鎖：一個座位只能被建立一次，所以不會有兩個人抽到同一個座位
     match /seats/{seat} {
       allow read: if true;
+      // 座位鎖的內容必須和同一次寫入的抽籤結果完全一致
       allow create: if isAdmin() || (
         isOpen()
         && drawable(seat)
         && request.resource.data.keys().hasOnly(['memberId', 'name', 'station', 'ts'])
+        && request.resource.data.keys().hasAll(['memberId', 'name', 'station', 'ts'])
+        && request.resource.data.memberId is string
         && existsAfter(drawPath(request.resource.data.memberId))
         && getAfter(drawPath(request.resource.data.memberId)).data.seat == seat
+        && getAfter(drawPath(request.resource.data.memberId)).data.name == request.resource.data.name
+        && getAfter(drawPath(request.resource.data.memberId)).data.station == request.resource.data.station
+        && getAfter(drawPath(request.resource.data.memberId)).data.ts == request.resource.data.ts
       );
       allow update, delete: if isAdmin();
     }
