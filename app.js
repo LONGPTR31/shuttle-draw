@@ -10,6 +10,8 @@ import { firebaseConfig, adminEmail } from './firebase-config.js';
 
 /* ---------- seat model ---------- */
 const BLOCK = {'7-1':'值班','7-3':'值班','8-1':'值班','8-3':'值班','1-4':'車長','1-2':'空'};
+// 值班人員座位（固定，不開放抽籤）
+const DUTY = {'7-1':'顏福成','7-3':'詹詠翔','8-1':'陳彥戎','8-3':'葉俊麟'};
 const COLORDER = ['1','3','4','2'];            // 駕駛員側靠窗、靠走道，車門側靠走道、靠窗
 const COLPOS = {'1':1,'3':2,'4':4,'2':5};
 const SEATS = [];
@@ -27,7 +29,7 @@ const DRAWABLE = SEATS.filter(s => !s.block);
 
 /* ---------- state ---------- */
 const S = {
-  status:'idle', roster:[], next:1, draws:[], captainId:'', captainName:'',
+  status:'idle', openAt:0, closeAt:0, roster:[], next:1, draws:[], captainId:'', captainName:'',
   admin:false, focusSeat:null, hiddenSeat:null, flashSeat:null, busy:false,
   rosterDirty:false, myId:null, rosterSig:'', capSig:'', capSelSig:'',
   ledger:[], ledgerMonth:'', ledgerSig:''
@@ -66,6 +68,33 @@ function errText(e) {
   if (c === 'resource-exhausted') return '今日資料庫用量已達上限，請明天再試或通知管理員。';
   if (c === 'unavailable' || c === 'deadline-exceeded') return '連線發生問題，請檢查網路後再試。';
   return '發生問題，請稍後再試。';
+}
+/* 目前實際狀態：排定時間到了就視為開放（安全規則用伺服器時間再檢查一次） */
+/* 截止時間（closeAt）到了就視為已截止 */
+function effStatus(st, openAt, closeAt) {
+  const now = Date.now();
+  let r = st === 'open' || st === 'closed' ? st : 'idle';
+  if (st === 'scheduled') r = openAt && now >= openAt ? 'open' : 'scheduled';
+  if (r === 'open' && closeAt && now >= closeAt) r = 'closed';
+  return r;
+}
+function curStatus() { return effStatus(S.status, S.openAt, S.closeAt); }
+function toLocalInput(ts) {
+  const d = new Date(ts), p = n => String(n).padStart(2, '0');
+  return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + 'T' + p(d.getHours()) + ':' + p(d.getMinutes());
+}
+function fromLocalInput(v) { const t = v ? new Date(v).getTime() : NaN; return isFinite(t) ? t : null; }
+function fmtFull(ts) {
+  try { return new Date(ts).toLocaleString('zh-TW', {month:'numeric', day:'numeric', weekday:'short', hour:'2-digit', minute:'2-digit', hour12:false}); }
+  catch (e) { return ''; }
+}
+function fmtLeft(ms) {
+  const t = Math.max(0, Math.ceil(ms / 1000));
+  const d = Math.floor(t / 86400), h = Math.floor(t % 86400 / 3600), m = Math.floor(t % 3600 / 60), sec = t % 60;
+  if (d) return d + ' 天 ' + h + ' 小時 ' + m + ' 分';
+  if (h) return h + ' 小時 ' + m + ' 分 ' + sec + ' 秒';
+  if (m) return m + ' 分 ' + sec + ' 秒';
+  return sec + ' 秒';
 }
 function captainName() {
   if (!S.captainId) return '';
@@ -108,7 +137,12 @@ function renderMap() {
     let cls = 'seat';
     const kids = [el('span', {className:'no', text:s.id})];
     let label = s.id + ' ';
-    if (s.block) {
+    if (s.block && DUTY[s.id]) {
+      cls += ' block duty';
+      kids.push(el('span', {className:'tag', 'aria-hidden':'true', text:'值班'}));
+      kids.push(el('span', {className:'who', text:DUTY[s.id], title:DUTY[s.id]}));
+      label += '值班，' + DUTY[s.id] + '，不開放抽籤';
+    } else if (s.block) {
       cls += ' block'; kids.push(el('span', {className:'who', text:s.block})); label += s.block + '，不開放抽籤';
     } else if (d) {
       cls += ' taken'; if (S.focusSeat === s.id) cls += ' mine';
@@ -129,19 +163,33 @@ function renderMap() {
 }
 
 /* ---------- status, form state ---------- */
+let TICK = null;
 function renderStatus() {
+  const st = curStatus();
   const pill = $('status-pill');
-  const label = {idle:'尚未開放', open:'抽籤開放中', closed:'已截止'}[S.status] || '尚未開放';
+  const label = st === 'scheduled' ? fmtFull(S.openAt) + ' 開放'
+    : ({idle:'尚未開放', open:'抽籤開放中', closed:'已截止'}[st] || '尚未開放');
   pill.textContent = label;
-  pill.className = 'pill ' + (S.status === 'open' ? 'open' : S.status === 'closed' ? 'closed' : '');
+  pill.className = 'pill ' + (st === 'open' ? 'open' : st === 'closed' ? 'closed' : st === 'scheduled' ? 'scheduled' : '');
   let note = '';
-  if (S.status === 'idle') note = '抽籤尚未開放，管理員開啟後才能抽。';
-  else if (S.status === 'closed') note = '抽籤已截止，座位圖和下方清單可以查看結果。';
+  if (st === 'idle') note = '抽籤尚未開放，管理員開啟後才能抽。';
+  else if (st === 'scheduled') note = '抽籤將在 ' + fmtFull(S.openAt) + ' 自動開放，還有 ' + fmtLeft(S.openAt - Date.now()) + '。時間到了不用重新整理。'
+    + (S.closeAt ? '截止時間：' + fmtFull(S.closeAt) + '。' : '');
+  else if (st === 'closed') note = (S.status !== 'closed' && S.closeAt ? '抽籤已在 ' + fmtFull(S.closeAt) + ' 截止' : '抽籤已截止') + '，座位圖和下方清單可以查看結果。';
   else if (!S.roster.length) note = '姓名名單還沒建立，請通知管理員。';
-  else note = '輸入姓名、選擇上車站後按「抽座位」。每人只能抽一次。';
+  else note = '輸入姓名、選擇上車站後按「抽座位」。每人只能抽一次。'
+    + (S.closeAt ? '抽籤將在 ' + fmtFull(S.closeAt) + ' 截止，還剩 ' + fmtLeft(S.closeAt - Date.now()) + '。' : '');
   $('state-note').textContent = note;
-  $('draw-btn').disabled = !(S.status === 'open' && !S.busy && S.roster.length > 0);
-  $('admin-status-text').textContent = '目前狀態：' + label;
+  $('draw-btn').disabled = !(st === 'open' && !S.busy && S.roster.length > 0);
+  $('admin-status-text').textContent = '目前狀態：' + (st === 'scheduled' ? '排定 ' + fmtFull(S.openAt) + ' 自動開放'
+    : st === 'open' && S.status === 'scheduled' ? '抽籤開放中（' + fmtFull(S.openAt) + ' 自動開放）' : label)
+    + (S.closeAt && st !== 'closed' && S.status !== 'closed' ? '，' + fmtFull(S.closeAt) + ' 自動截止' : '')
+    + (st === 'closed' && S.status !== 'closed' && S.closeAt ? '（' + fmtFull(S.closeAt) + ' 自動截止）' : '');
+  $('close-now').textContent = S.closeAt && S.status !== 'closed' ? '目前截止時間：' + fmtFull(S.closeAt) : '目前沒有設定截止時間。';
+  // 排定開放、或有截止時間時每秒更新倒數，時間一到按鈕就會自動變化
+  const ticking = st === 'scheduled' || (st === 'open' && !!S.closeAt);
+  if (ticking && !TICK) TICK = setInterval(renderStatus, 1000);
+  else if (!ticking && TICK) { clearInterval(TICK); TICK = null; }
 }
 
 /* ---------- results ---------- */
@@ -253,7 +301,8 @@ async function claimSeat(member, station, isTest) {
   return runTransaction(db, async tx => {
     const snaps = await Promise.all([tx.get(stateRef), tx.get(drawRef), ...seatRefs.map(r => tx.get(r))]);
     const st = snaps[0], mine = snaps[1], seatSnaps = snaps.slice(2);
-    const status = st.exists() ? st.data().status : 'idle';
+    const sd = st.exists() ? st.data() : {};
+    const status = effStatus(sd.status, sd.openAt, sd.closeAt);
     if (!isTest && status !== 'open') return {error:status === 'closed' ? 'closed' : 'idle'};
     if (mine.exists()) return {existing:Object.assign({}, mine.data(), {id:member.id})};
     const taken = {};
@@ -323,7 +372,12 @@ async function onDraw(e) {
     else if (out.error === 'closed') say('draw-msg', '抽籤已截止。', 'err');
     else say('draw-msg', '抽籤尚未開放。', 'err');
   } catch (err) {
-    say('draw-msg', errText(err), 'err');
+    // 手機時間比伺服器快時，可能在開放前幾秒就送出
+    if (err && err.code === 'permission-denied' && S.closeAt && Math.abs(Date.now() - S.closeAt) < 120000)
+      say('draw-msg', '抽籤已截止。', 'err');
+    else if (err && err.code === 'permission-denied' && S.status === 'scheduled' && Math.abs(Date.now() - S.openAt) < 120000)
+      say('draw-msg', '抽籤還沒開放（你的裝置時間可能比較快），請過幾秒再按一次。', 'err');
+    else say('draw-msg', errText(err), 'err');
   } finally {
     S.busy = false; S.flashSeat = null; S.hiddenSeat = null; renderMap(); renderStatus();
   }
@@ -378,16 +432,56 @@ function onAuth(user) {
   S.admin = !!user;
   $('admin-form').hidden = S.admin;
   $('admin-tools').hidden = !S.admin;
-  if (S.admin) { fillRoster(true); fillCaptainSelect(); }
+  if (S.admin) { fillRoster(true); fillCaptainSelect(); fillOpenAt(); }
   renderResults(); renderLedger();
 }
 async function guard(msgId, fn, okText) {
   try { await fn(); if (okText) say(msgId, okText, 'ok'); }
   catch (err) { say(msgId, errText(err), 'err'); }
 }
+/* 狀態文件一律整份寫入：status、openAt（排定開放）、closeAt（截止，0＝不截止） */
+function writeState(msgId, patch, okText) {
+  const data = Object.assign({status:S.status, openAt:S.openAt || 0, closeAt:S.closeAt || 0}, patch, {updatedAt:Date.now()});
+  return guard(msgId, () => setDoc(doc(db, 'config', 'state'), data), okText);
+}
 function setStatus(st) {
-  return guard('tools-msg', () => setDoc(doc(db, 'config', 'state'), {status:st, updatedAt:Date.now()}),
-    st === 'open' ? '已開始抽籤。' : '已結束抽籤。');
+  const now = Date.now();
+  if (st === 'open') {
+    // 截止時間已經過了就清掉，不然一開放就馬上截止
+    const keep = S.closeAt > now;
+    return writeState('tools-msg', {status:'open', closeAt:keep ? S.closeAt : 0},
+      '已開始抽籤。' + (keep ? '會在 ' + fmtFull(S.closeAt) + ' 自動截止。' : ''));
+  }
+  if (st === 'closed') return writeState('tools-msg', {status:'closed', closeAt:0}, '已結束抽籤。');
+  return writeState('schedule-msg', {status:'idle'}, '已取消排定，抽籤維持不開放。');
+}
+function scheduleOpen() {
+  const t = fromLocalInput($('open-at').value);
+  if (t == null) { say('schedule-msg', '請選擇開放的日期和時間。', 'err'); return; }
+  if (t <= Date.now()) { say('schedule-msg', '開放時間要晚於現在。要立刻開放請按「立即開放」。', 'err'); return; }
+  const keep = S.closeAt > Date.now();
+  if (keep && S.closeAt <= t) { say('schedule-msg', '開放時間要早於截止時間（' + fmtFull(S.closeAt) + '），請先改截止時間或取消截止。', 'err'); return; }
+  return writeState('schedule-msg', {status:'scheduled', openAt:t, closeAt:keep ? S.closeAt : 0},
+    '已排定 ' + fmtFull(t) + ' 自動開放抽籤。' + (keep ? '截止時間：' + fmtFull(S.closeAt) + '。' : ''));
+}
+function scheduleClose() {
+  const t = fromLocalInput($('close-at').value);
+  if (t == null) { say('close-msg', '請選擇截止的日期和時間。', 'err'); return; }
+  if (t <= Date.now()) { say('close-msg', '截止時間要晚於現在。要立刻截止請按「結束抽籤」。', 'err'); return; }
+  if (S.status === 'scheduled' && S.openAt && t <= S.openAt) { say('close-msg', '截止時間要晚於開放時間（' + fmtFull(S.openAt) + '）。', 'err'); return; }
+  const extra = S.status === 'closed' ? '目前抽籤是結束狀態，要先開放或排定開放，才會用到這個截止時間。'
+    : S.status === 'idle' ? '抽籤還沒開放，記得開放或排定開放。' : '';
+  return writeState('close-msg', {closeAt:t}, '已設定 ' + fmtFull(t) + ' 自動截止。' + extra);
+}
+function clearClose() {
+  return writeState('close-msg', {closeAt:0}, '已取消截止時間，要手動按「結束抽籤」。');
+}
+function fillOpenAt() {
+  let t;
+  if (S.status === 'scheduled' && S.openAt) t = S.openAt;
+  else { const d = new Date(Date.now() + 3600000); d.setMinutes(0, 0, 0); t = d.getTime(); }
+  $('open-at').value = toLocalInput(t);
+  $('close-at').value = toLocalInput(S.closeAt || (Math.max(t, Date.now()) + 86400000));
 }
 function normStation(x) {
   x = norm(x);
@@ -557,6 +651,7 @@ function exportRows() {
   const ids = {}; S.draws.forEach(d => { ids[d.id] = true; });
   const cn = captainName();
   if (cn) rows.push(['1-4（車長）', cn, '', '']);
+  Object.keys(DUTY).forEach(id => rows.push([id + '（值班）', DUTY[id], '', '']));
   S.roster.forEach(m => { if (!ids[m.id] && m.id !== S.captainId) rows.push(['', m.name, '', '未抽籤']); });
   return rows;
 }
@@ -579,7 +674,7 @@ function copyResults() {
 async function makeImage() {
   const FONT = '"Noto Sans TC","PingFang TC","Microsoft JhengHei",sans-serif';
   const NUM = '"Barlow Condensed","Noto Sans TC",sans-serif';
-  const sample = S.draws.map(d => d.name).join('') + captainName() + '交通車座位表駕駛員車門走道安全門自由座值班車長已抽可抽人東湖宿舍站其他站不開放抽籤更新時間、（）＝';
+  const sample = S.draws.map(d => d.name).join('') + captainName() + Object.values(DUTY).join('') + '交通車座位表駕駛員車門走道安全門自由座值班車長已抽可抽人東湖宿舍站其他站不開放抽籤更新時間、（）＝';
   try {
     await Promise.all([
       document.fonts.load('700 26px "Noto Sans TC"', sample),
@@ -683,7 +778,12 @@ async function makeImage() {
       return;
     }
     const d = bySeat[s.id];
-    if (s.block) {
+    if (s.block && DUTY[s.id]) {
+      box(x, y, sw, sh, hatch, LINE, true);
+      ctx.textAlign = 'left'; ctx.fillStyle = MUTED; ctx.font = '400 16px ' + NUM; ctx.fillText(s.id, x + 10, y + 18);
+      ctx.textAlign = 'right'; ctx.font = '500 16px ' + FONT; ctx.fillText('值班', x + sw - 10, y + 18);
+      ctx.textAlign = 'center'; fit(DUTY[s.id], sw - 20, 26, '700', FONT); ctx.fillStyle = INK; ctx.fillText(DUTY[s.id], x + sw / 2, y + sh - 26);
+    } else if (s.block) {
       box(x, y, sw, sh, hatch, LINE, true);
       ctx.textAlign = 'left'; ctx.fillStyle = MUTED; ctx.font = '400 16px ' + NUM; ctx.fillText(s.id, x + 10, y + 18);
       ctx.textAlign = 'center'; ctx.font = '500 22px ' + FONT; ctx.fillText(s.block, x + sw / 2, y + sh - 26);
@@ -815,8 +915,11 @@ function applyLedger(docs) {
 function drawSig(list) { return JSON.stringify(list.map(d => [d.id, d.seat, d.name, d.station, !!d.test]).sort()); }
 function applyState(d) {
   const st = d && d.status ? d.status : 'idle';
-  if (st === S.status) return;
-  S.status = st; renderStatus();
+  const at = d && typeof d.openAt === 'number' ? d.openAt : 0;
+  const ct = d && typeof d.closeAt === 'number' ? d.closeAt : 0;
+  if (st === S.status && at === S.openAt && ct === S.closeAt) return;
+  S.status = st; S.openAt = at; S.closeAt = ct; renderStatus();
+  if (S.admin) fillOpenAt();
 }
 function applyRoster(d) {
   const m = Array.isArray(d && d.members) ? d.members : [];
@@ -854,6 +957,10 @@ function init() {
   $('btn-logout').addEventListener('click', () => { signOut(auth); });
   $('btn-open').addEventListener('click', () => setStatus('open'));
   $('btn-close').addEventListener('click', () => setStatus('closed'));
+  $('btn-schedule').addEventListener('click', scheduleOpen);
+  $('btn-unschedule').addEventListener('click', () => setStatus('idle'));
+  $('btn-close-at').addEventListener('click', scheduleClose);
+  $('btn-close-clear').addEventListener('click', clearClose);
   $('btn-roster').addEventListener('click', saveRoster);
   $('roster-input').addEventListener('input', () => { S.rosterDirty = true; });
   $('btn-export').addEventListener('click', exportCsv);

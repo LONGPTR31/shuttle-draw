@@ -128,9 +128,29 @@
             <h3>抽籤開關</h3>
             <p class="hint" id="admin-status-text"></p>
             <div class="row">
-              <button type="button" id="btn-open">開始抽籤</button>
+              <button type="button" id="btn-open">立即開放</button>
               <button type="button" id="btn-close" class="ghost">結束抽籤</button>
             </div>
+            <p class="hint" style="margin-top:14px">或設定時間自動開放：時間一到，大家的頁面會自動變成可以抽。</p>
+            <div class="field">
+              <label for="open-at">開放時間</label>
+              <input id="open-at" type="datetime-local">
+            </div>
+            <div class="row" style="margin-top:8px">
+              <button type="button" id="btn-schedule">排定開放</button>
+              <button type="button" id="btn-unschedule" class="ghost">取消排定</button>
+            </div>
+            <p class="msg" id="schedule-msg" role="status" aria-live="polite"></p>
+            <p class="hint" style="margin-top:14px">設定時間自動截止：時間一到就不能再抽，手動開放或排定開放都適用。<br><span id="close-now"></span></p>
+            <div class="field">
+              <label for="close-at">截止時間</label>
+              <input id="close-at" type="datetime-local">
+            </div>
+            <div class="row" style="margin-top:8px">
+              <button type="button" id="btn-close-at">設定截止</button>
+              <button type="button" id="btn-close-clear" class="ghost">取消截止</button>
+            </div>
+            <p class="msg" id="close-msg" role="status" aria-live="polite"></p>
           </div>
           <div>
             <h3>結果</h3>

@@ -88,6 +88,8 @@ h1,h2{text-wrap:balance}
 .pill.open::before{background:var(--accent)}
 .pill.closed{border-color:var(--danger);color:var(--danger)}
 .pill.closed::before{background:var(--danger)}
+.pill.scheduled{border-color:var(--amber);color:var(--fg)}
+.pill.scheduled::before{background:var(--amber)}
 
 .notice{padding:10px 14px;border-radius:8px;background:var(--amber-soft);border:1px solid var(--amber);font-size:14px}
 
@@ -110,7 +112,7 @@ h1,h2{text-wrap:balance}
 form{display:flex;flex-direction:column;gap:14px}
 .field{display:flex;flex-direction:column;gap:6px;border:0;padding:0;margin:0;min-width:0}
 .field>label,.field>legend{font-size:13px;font-weight:500;color:var(--muted);letter-spacing:.06em;padding:0}
-input[type=text],input[type=password],input[type=date],input[type=number],textarea{
+input[type=text],input[type=password],input[type=date],input[type=datetime-local],input[type=number],textarea{
   width:100%;font:inherit;font-size:16px;color:var(--fg);background:var(--bg);
   border:1px solid var(--line-strong);border-radius:8px;padding:10px 12px;
 }
@@ -188,6 +190,8 @@ select:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
   border-style:dashed;
 }
 .seat.block .who,.seat.rear .who{color:var(--muted);font-weight:500;font-size:12px}
+.seat.duty .who{color:var(--fg);font-weight:700;font-size:13px}
+.seat.duty .tag{color:var(--muted);font-weight:500}
 .free-mid{display:flex;align-items:center;justify-content:center;border:1px dashed var(--line-strong);border-radius:7px;font-size:12px;color:var(--muted);writing-mode:vertical-rl;letter-spacing:.2em}
 .legend{display:flex;flex-wrap:wrap;gap:6px 16px;margin-top:14px;font-size:13px;color:var(--muted)}
 .legend span{display:inline-flex;align-items:center;gap:6px}
